@@ -100,6 +100,7 @@ def find_vm_lxc(id: int):
     if (data["code"]) != 0:
         return None
     for line in data["stdout"].splitlines():
+        line = line.strip()
         if line.startswith(str(id)):
             m = re.match(r"(\d+)\s+(\w+)\s+((\w+)\s+)?([\w\-]+)", line)
             if m:
@@ -115,8 +116,9 @@ def find_vm_kvm(id: int):
     if (data["code"]) != 0:
         return None
     for line in data["stdout"].splitlines():
+        line = line.strip()
         if line.startswith(str(id)):
-            m = re.match(r"\s*(\d+)\s+([\w\-]+)\s+(\w+)\s+(\d+)\s+([\d+.]+)\s+(\d+)", line)
+            m = re.match(r"(\d+)\s+([\w\-]+)\s+(\w+)\s+(\d+)\s+([\d+.]+)\s+(\d+)", line)
             if m:
                 _, name, status, memory, bootdisk, pid = m.groups()
                 info = dict(zip(("id", "name", "status", "memory", "bootdisk", "pid", "type"),
@@ -159,13 +161,18 @@ def export_vm(args):
     print(full_cmd)
     result = run_command(full_cmd, env)
 
+    print(result)
+
     if result["code"] > 0:
         print("Error in export")
         print(result["stderr"])
         return False
 
     print("Export done")
+    print("MESSAGE:")
     print(result["stdout"])
+    print("ERRORS:")
+    print(result["stderr"])
     return True
 
 
@@ -208,8 +215,7 @@ def import_vm(args):
 
 def main():
     args = parse_args()
-    print(args)
-    # sys.exit()
+    # print(args)
     if getattr(args, "ask_access_key") is True:
         access_key = getpass.getpass('Restic repository access key:')
         if access_key:
