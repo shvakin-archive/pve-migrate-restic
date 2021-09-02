@@ -171,7 +171,7 @@ def export_vm(args):
     print("Export done")
     print("MESSAGE:")
     print(result["stdout"])
-    print("ERRORS:")
+    print("INFO:")
     print(result["stderr"])
     return True
 
