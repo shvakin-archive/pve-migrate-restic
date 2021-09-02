@@ -32,27 +32,34 @@ def parse_args():
     parser_export.set_defaults(func=export_vm)
 
     parent_parser_import = argparse.ArgumentParser(add_help=False)
+    parent_parser_import.add_argument("-t", "--template", type=str, dest="template", help="template for new VM",
+                                      required=True)
     parent_parser_import.add_argument("-r", "--storage", type=str, dest="storage", help="storage for new VM",
                                       required=True)
+    parent_parser_import.add_argument("-f", "--force", dest="force", action='store_true',
+                                      help="allow to overwrite existing VM",
+                                      required=False)
+    parent_parser_import.add_argument("--no-unique", dest="unique", action='store_false', default=True,
+                                      help="not assign a unique random ethernet address",
+                                      required=False)
 
     parser_import = subparsers.add_parser("import", help="Import VM")
+    parser_import.set_defaults(func=import_vm)
 
-    import_subparsers = parser_import.add_subparsers(title="import types", description="valid import types",
-                                                     help="additional help")
+    import_subparsers = parser_import.add_subparsers(title="vm types", description="valid import vm types",
+                                                     help="additional help", dest="vmtype")
     import_subparsers.required = True
 
-    import_lxc_parser = import_subparsers.add_parser("lxc", help="Import VM",
+    import_lxc_parser = import_subparsers.add_parser("lxc", help="Import lxc vm",
                                                      parents=[parent_parser, parent_parser_import])
 
-    import_lxc_parser.set_defaults(func=import_lxc_vm)
-
-    import_lxc_parser.add_argument("-t", "--template", type=str, dest="template", help="template for new VM",
-                                   required=True)
     import_lxc_parser.add_argument("-n", "--hostname", type=str, dest="hostname", help="hostname for new VM",
                                    required=False)
 
     import_lxc_parser.add_argument("-s", "--size", type=str, dest="size", help="root size in GB for new VM",
                                    required=True)
+    import_kvm_parser = import_subparsers.add_parser("kvm", help="Import kvm VM",
+                                                     parents=[parent_parser, parent_parser_import])
 
     return parser.parse_args()
 
@@ -94,54 +101,36 @@ def find_vm_lxc(id: int):
         return None
     for line in data["stdout"].splitlines():
         if line.startswith(str(id)):
-            m = re.match("(\d+)\s+(\w+)\s+((\w+)\s+)?(\S+)", line)
+            m = re.match(r"(\d+)\s+(\w+)\s+((\w+)\s+)?([\w\-]+)", line)
             if m:
                 _, status, _, lock, name = m.groups()
-                info = dict(zip(("id", "status", "lock", "name"), (id, status, lock, name)))
+                info = dict(zip(("id", "status", "lock", "name", "type"), (id, status, lock, name, "lxc")))
                 return info
     return None
 
 
 def find_vm_kvm(id: int):
+    command = "qm list"
+    data = run_command(command)
+    if (data["code"]) != 0:
+        return None
+    for line in data["stdout"].splitlines():
+        if line.startswith(str(id)):
+            m = re.match(r"\s*(\d+)\s+([\w\-]+)\s+(\w+)\s+(\d+)\s+([\d+.]+)\s+(\d+)", line)
+            if m:
+                _, name, status, memory, bootdisk, pid = m.groups()
+                info = dict(zip(("id", "name", "status", "memory", "bootdisk", "pid", "type"),
+                                (id, name, status, memory, bootdisk, pid, "kvm")))
+                return info
     return None
 
 
 def get_vm_info(id: int):
-    info = find_vm_lxc(id)
-    if info is not None:
-        info["type"] = "lxc"
-    else:
-        info = find_vm_kvm(id)
-        if info is None:
-            return None
-        info["type"] = "kvm"
-    return info
+    return find_vm_lxc(id) or find_vm_kvm(id)
 
 
 def get_env_cmd(url: str, password: str):
     return f" . env-load {url} {password}"
-
-
-def get_lxc_dump_cmd(vmid: int, vmname: str, vmtype: str):
-    return f"vzdump {vmid} --mode stop --stdout --compress zstd" \
-           f" | ifne restic backup -v --stdin --stdin-filename {vmname}_{vmtype}.tar.zst" \
-           f" --tag {vmname} --tag {vmname}_{vmtype} --tag {vmtype}"
-
-
-def export_lxc_vm(url: str, password: str, vmid: int, vmname: str, vmtype: str, access_key=None):
-    env = {"RESTIC_PASSWORD": access_key} if access_key is not None else None
-    cmd = get_env_cmd(url, password) + " && " + get_lxc_dump_cmd(vmid, vmname, vmtype)
-    print(cmd)
-    result = run_command(cmd, env)
-
-    if result["code"] > 0:
-        print("Error in export")
-        print(result["stderr"])
-        return False
-
-    print("Export done")
-    print(result["stdout"])
-    return True
 
 
 def export_vm(args):
@@ -159,36 +148,53 @@ def export_vm(args):
         sys.exit(1)
 
     print(f"Found {info['type']} VM id {vmid} with name {info['name']}")
-    if info["type"] == "lxc":
-        export_lxc_vm(url, password, vmid, info["name"], info["type"], access_key)
+
+    env = {"RESTIC_PASSWORD": access_key} if access_key is not None else None
+
+    dump_cmd = f"vzdump {vmid} --mode stop --stdout --compress zstd" \
+               f" | ifne restic backup -v --stdin --stdin-filename {info['name']}_{info['type']}.tar.zst" \
+               f" --tag {info['name']} --tag {info['name']}_{info['type']} --tag {info['type']}"
+
+    full_cmd = f"{get_env_cmd(url, password)} && {dump_cmd}"
+    print(full_cmd)
+    result = run_command(full_cmd, env)
+
+    if result["code"] > 0:
+        print("Error in export")
+        print(result["stderr"])
+        return False
+
+    print("Export done")
+    print(result["stdout"])
+    return True
 
 
-def import_lxc_vm(args):
-    vmtype = "lxc"
-    vmid = getattr(args, "vmid")
-    url = getattr(args, "url")
-    password = getattr(args, "password")
-    access_key = getattr(args, "access_key")
-
-    template = getattr(args, "template")
-    storage = getattr(args, "storage")
+def import_vm(args):
+    vmtype, vmid, url, password, template, storage = (
+        args.vmtype, args.vmid, args.url, args.password, args.template, args.storage)
 
     filename = f"{template}_{vmtype}.tar.zst"
 
-    hostname = getattr(args, "hostname") or template
+    print(f"Try import {vmtype} VM #{vmid} on storage: {storage} from file: {filename}")
 
-    size = getattr(args, "size")
+    pull_command = f"restic dump latest {filename}  --tag {vmtype} --tag {template}_{vmtype} | zstd -d -c"
 
-    print(f"Start import {vmtype} VM #{vmid} with hostname: {hostname}) on storage: {storage} from file: {filename}")
+    command_flags_str = f" --unique {str(args.unique).lower()} --force {str(args.force).lower()}"
 
-    lxc_import_cmd = f"restic dump latest {filename}  --tag {vmtype} --tag {template}_{vmtype}" \
-                     " | zstd -d -c" \
-                     f" | pct restore {vmid} --hostname {hostname} --storage {storage} --rootfs {size} --unique true -"
+    if vmtype == "lxc":
+        restore_command = f"pct restore {vmid} --hostname {args.hostname} --storage {storage} --rootfs {args.size} {command_flags_str} -"
+    elif vmtype == "kvm":
+        restore_command = f"qmrestore {vmid} --storage {storage} {command_flags_str} -"
+    else:
+        raise NotImplementedError(f"Restore command for {vmtype} not implemented")
 
-    env = {"RESTIC_PASSWORD": access_key} if access_key is not None else None
-    cmd = get_env_cmd(url, password) + " && " + lxc_import_cmd
-    print(f"Command: {cmd}")
-    result = run_command(cmd, env)
+    full_command = f"{get_env_cmd(url, password)} && {pull_command} | {restore_command}"
+
+    env = {"RESTIC_PASSWORD": args.access_key} if args.access_key is not None else None
+
+    print(f"Command: {full_command}")
+
+    result = run_command(full_command, env)
 
     if result["code"] > 0:
         print("Error in import")
@@ -202,6 +208,8 @@ def import_lxc_vm(args):
 
 def main():
     args = parse_args()
+    print(args)
+    # sys.exit()
     if getattr(args, "ask_access_key") is True:
         access_key = getpass.getpass('Restic repository access key:')
         if access_key:
