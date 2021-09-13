@@ -197,9 +197,9 @@ def import_vm(args):
     command_flags_str = f" --unique {str(args.unique).lower()} --force {str(args.force).lower()}"
 
     if vmtype == "lxc":
-        restore_command = f"pct restore {vmid} --hostname {args.hostname} --storage {storage} --rootfs {args.size} {command_flags_str} -"
+        restore_command = f"pct restore {vmid} - --hostname {args.hostname} --storage {storage} --rootfs {args.size} {command_flags_str}"
     elif vmtype == "kvm":
-        restore_command = f"qmrestore {vmid} --storage {storage} {command_flags_str} -"
+        restore_command = f"qmrestore - {vmid} --storage {storage} {command_flags_str}"
     else:
         raise NotImplementedError(f"Restore command for {vmtype} not implemented")
 
