@@ -15,7 +15,7 @@ def parse_args():
     parent_parser = argparse.ArgumentParser(add_help=False)
     parent_parser.add_argument("-l", "--url", dest="url", type=str, help="url for vault", required=True)
     parent_parser.add_argument("-p", "--password", dest="password", type=str, help="password for restic", required=True)
-    parent_parser.add_argument("-m", "--vmid", dest="vmid", type=str, help="vmid to operation", required=True)
+
     group_1 = parent_parser.add_mutually_exclusive_group(required=False)
     group_1.add_argument("-k", "--access-key", dest="access_key", type=str, help="restic access key",
                          required=False)
@@ -24,11 +24,14 @@ def parse_args():
                          required=False)
     parent_parser.set_defaults(ask_access_key=False)
 
+    import_export_parser = argparse.ArgumentParser(add_help=False)
+    import_export_parser.add_argument("-m", "--vmid", dest="vmid", type=str, help="vmid to operation", required=True)
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(title="command", description="valid subcommands", help="additional help")
     subparsers.required = True
 
-    parser_export = subparsers.add_parser("export", help="Export VM", parents=[parent_parser])
+    parser_export = subparsers.add_parser("export", help="Export VM", parents=[parent_parser, import_export_parser])
     parser_export.set_defaults(func=export_vm)
 
     parent_parser_import = argparse.ArgumentParser(add_help=False)
@@ -51,7 +54,8 @@ def parse_args():
     import_subparsers.required = True
 
     import_lxc_parser = import_subparsers.add_parser("lxc", help="Import lxc vm",
-                                                     parents=[parent_parser, parent_parser_import])
+                                                     parents=[parent_parser, import_export_parser,
+                                                              parent_parser_import])
 
     import_lxc_parser.add_argument("-n", "--hostname", type=str, dest="hostname", help="hostname for new VM",
                                    required=False)
@@ -59,8 +63,12 @@ def parse_args():
     import_lxc_parser.add_argument("-s", "--size", type=str, dest="size", help="root size in GB for new VM",
                                    required=True)
     import_kvm_parser = import_subparsers.add_parser("kvm", help="Import kvm VM",
-                                                     parents=[parent_parser, parent_parser_import])
+                                                     parents=[parent_parser, import_export_parser,
+                                                              parent_parser_import])
 
+    parser_list = subparsers.add_parser("list", help="List Templates", parents=[parent_parser])
+    parser_list.set_defaults(func=list_templates)
+    parser_list.add_argument("-y", "--type", type=str, dest="vmtype", help="type vm", required=False)
     return parser.parse_args()
 
 
@@ -210,6 +218,34 @@ def import_vm(args):
 
     print("Import done")
     print(result["stdout"])
+    return True
+
+
+def list_templates(args):
+    url, password, vmtype = (args.url, args.password, args.vmtype)
+    tag_filter = f"--tag {vmtype}" if vmtype is not None else ""
+    grep = '| grep "tar.zst"'
+    list_command = f"restic snapshots --last  {tag_filter}  {grep} " #--json
+
+    full_command = f"{get_env_cmd(url, password)} && {list_command}"
+
+    env = {"RESTIC_PASSWORD": args.access_key} if args.access_key is not None else None
+
+    print(f"Command: {full_command}")
+
+    result = run_command(full_command, env)
+
+    if result["code"] > 0:
+        print("Error in showing list")
+        print(result["stderr"])
+        return False
+
+    info = result["stdout"]
+    print("Templates:")
+    for line in info.splitlines():
+        _,_,_,_,_,file = line.split()
+        file = file.lstrip("/")
+        print(file)
     return True
 
 
